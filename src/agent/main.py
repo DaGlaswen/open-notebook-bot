@@ -154,8 +154,12 @@ def format_markdown_for_telegram_html(text: str) -> str:
     return result
 
 
+import re
+import html
+
 def _convert_table_to_html_bullets(table_lines: list[str]) -> list[str]:
     if len(table_lines) < 2:
+        # Просто экранируем и возвращаем как есть
         escaped = [html.escape(line) for line in table_lines]
         return ["\n" + "\n".join(escaped)]
 
@@ -165,6 +169,20 @@ def _convert_table_to_html_bullets(table_lines: list[str]) -> list[str]:
         if not headers:
             raise ValueError
 
+        def markdown_bold_to_html(text: str) -> str:
+            """Заменяет **текст** и __текст__ на <b>текст</b>"""
+            text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+            text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
+            return text
+
+        def escape_preserving_b_tags(text: str) -> str:
+            """Экранирует HTML, но оставляет <b> и </b> нетронутыми"""
+            parts = re.split(r'(<b>.*?</b>)', text)
+            for i, part in enumerate(parts):
+                if not (part.startswith('<b>') and part.endswith('</b>')):
+                    parts[i] = html.escape(part)
+            return ''.join(parts)
+
         result = ["\n"]
         for row in data_lines:
             if not row.strip() or '---' in row:
@@ -172,12 +190,25 @@ def _convert_table_to_html_bullets(table_lines: list[str]) -> list[str]:
             cells = [c.strip() for c in row.split('|')[1:-1]]
             if len(cells) != len(headers):
                 continue
-            main = html.escape(cells[0])
-            rest = " | ".join(html.escape(c) for c in cells[1:])
-            result.append(f"• <b>{main}</b>: {rest}")
+
+            # Обрабатываем первую ячейку (жирный заголовок пункта)
+            main_raw = cells[0]
+            main_with_bold = markdown_bold_to_html(main_raw)
+            main_safe = escape_preserving_b_tags(main_with_bold)
+
+            # Обрабатываем остальные ячейки (могут тоже содержать **...**)
+            rest_parts = []
+            for c in cells[1:]:
+                c_with_bold = markdown_bold_to_html(c)
+                c_safe = escape_preserving_b_tags(c_with_bold)
+                rest_parts.append(c_safe)
+            rest = " | ".join(rest_parts)
+
+            result.append(f"• {main_safe}: {rest}")
         return result
+
     except Exception:
-        # Fallback: экранировать всю таблицу как текст
+        # Fallback: экранировать всю таблицу как plain text
         escaped = [html.escape(line) for line in table_lines]
         return ["\n" + "\n".join(escaped)]
 
