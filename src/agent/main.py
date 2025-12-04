@@ -84,6 +84,90 @@ class SessionManager:
         self._session_id = None
         self._context = None
 
+def format_markdown_for_telegram(text: str) -> str:
+    lines = text.splitlines()
+    output_lines = []
+    in_table = False
+    table_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Заголовки
+        if line.startswith("### "):
+            content = line[4:].strip()
+            output_lines.append(f"\n🔹 {content}")
+            i += 1
+            continue
+        elif line.startswith("## "):
+            content = line[3:].strip()
+            output_lines.append(f"\n📌 {content}")
+            i += 1
+            continue
+        elif line.startswith("# "):
+            content = line[2:].strip()
+            output_lines.append(f"\n🎯 {content.upper()}")
+            i += 1
+            continue
+
+        # Начало таблицы
+        if "|" in line and not in_table:
+            if i + 1 < len(lines) and re.search(r'\|.*?-.*?\|', lines[i + 1]):
+                in_table = True
+                table_lines = [line]
+                i += 1
+                continue
+
+        if in_table:
+            table_lines.append(line)
+            if "|" not in line or i == len(lines) - 1:
+                output_lines.extend(_convert_table_to_plain_bullets(table_lines))
+                in_table = False
+                table_lines = []
+            i += 1
+            continue
+
+        # Убираем ** и __
+        line = re.sub(r'\*\*(.*?)\*\*', r'\1', line)
+        line = re.sub(r'__(.*?)__', r'\1', line)
+
+        # Убираем ссылки [текст](url) → текст
+        line = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', line)
+
+        output_lines.append(line)
+        i += 1
+
+    result = "\n".join(output_lines).strip()
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    return result
+
+
+def _convert_table_to_plain_bullets(table_lines: list[str]) -> list[str]:
+    if len(table_lines) < 2:
+        return ["\n" + "\n".join(table_lines)]
+
+    headers = [h.strip() for h in table_lines[0].split('|')[1:-1]]
+    data_lines = table_lines[2:]
+
+    if not headers:
+        return ["\n" + "\n".join(table_lines)]
+
+    result = ["\n"]
+    for row in data_lines:
+        if not row.strip() or '---' in row:
+            continue
+        cells = [c.strip() for c in row.split('|')[1:-1]]
+        if len(cells) != len(headers):
+            continue
+
+        # Формат: • Заголовок: остальные колонки через запятую
+        main = cells[0]
+        rest = " | ".join(cells[1:])
+        result.append(f"• {main}: {rest}")
+
+    return result
+
 
 class MessageQueue:
     """Очередь сообщений для синхронной обработки"""
@@ -132,8 +216,11 @@ class MessageQueue:
                     await bot.send_chat_action(chat_id, "typing")
                     response = await self.send_to_opennotebook(user_id, chat_msg.message)
 
+                    # Форматируем для Telegram
+                    formatted_response = format_markdown_for_telegram(response)
+
                     # Отправляем ответ пользователю
-                    await self.send_long_message(bot, chat_id, response)
+                    await self.send_long_message(bot, chat_id, formatted_response)
 
                 except Exception as e:
                     logger.error(f"Ошибка обработки сообщения от пользователя {user_id}: {e}")
