@@ -1,0 +1,43 @@
+[project]
+name = "open-notebook-bot"
+version = "0.1.0"
+description = "жопа"
+authors = [
+    {name = "glaswennn", email = "golovinov.daniel@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "loguru",
+    "pydantic>=2.0.0",
+    "pydantic-settings",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]",
+    "python-dotenv>=1.1.0,<2.0.0",
+    "MainContentExtractor",
+    "httpx",
+    "asyncio-mqtt",
+    "aiofiles",
+    "typing-extensions",
+    "requests>=2.32.3,<3.0.0",
+    "telethon (>=1.40.0,<2.0.0)",
+    "httpx-socks (>=0.10.1,<0.11.0)",
+    "aiogram (>=3.22.0,<4.0.0)",
+]
+
+[tool.poetry]
+packages = [{include = "agent", from = "src"}]
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C", "UP"]
+ignore = ["E501", "B008", "C901"]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
