@@ -133,7 +133,7 @@ class MessageQueue:
                     response = await self.send_to_opennotebook(user_id, chat_msg.message)
 
                     # Отправляем ответ пользователю
-                    await bot.send_message(chat_id, response)
+                    await self.send_long_message(bot, chat_id, response)
 
                 except Exception as e:
                     logger.error(f"Ошибка обработки сообщения от пользователя {user_id}: {e}")
@@ -149,6 +149,44 @@ class MessageQueue:
             async with self.lock:
                 self.processing = False
             logger.info("Обработка очереди завершена")
+
+    async def send_long_message(self, bot: Bot, chat_id: int, text: str):
+        """Отправка длинного сообщения в виде нескольких частей, если превышен лимит длины сообщения в Telegram"""
+        TELEGRAM_MAX_LENGTH = 4096
+        
+        if len(text) <= TELEGRAM_MAX_LENGTH:
+            await bot.send_message(chat_id, text)
+            return
+        
+        # Разбиваем текст на части, не превышающие лимит
+        parts = []
+        current_part = ""
+        
+        # Разбиваем по строкам, чтобы не резать посреди строк
+        lines = text.split('\n')
+        
+        for line in lines:
+            if len(current_part + line + '\n') <= TELEGRAM_MAX_LENGTH:
+                current_part += line + '\n'
+            else:
+                if current_part:
+                    parts.append(current_part.rstrip('\n'))
+                current_part = line + '\n'
+        
+        if current_part:
+            parts.append(current_part.rstrip('\n'))
+        
+        # Отправляем все части
+        for i, part in enumerate(parts):
+            if i == 0:
+                # Для первого сообщения не добавляем префикс
+                await bot.send_message(chat_id, part)
+            else:
+                # Для последующих частей добавляем номер части
+                await bot.send_message(chat_id, f"({i + 1}/{len(parts)})\n{part}")
+            
+            # Небольшая задержка, чтобы не превысить рейт-лимит
+            await asyncio.sleep(0.1)
 
     async def send_to_opennotebook(self, user_id: int, message: str) -> str:
         """Отправка сообщения в Open-Notebook"""
@@ -176,10 +214,9 @@ class MessageQueue:
 
                 # Извлекаем последнее сообщение от AI
                 messages = data.get("messages", [])
-                ai_messages = [msg for msg in messages if msg.get("type") == "ai"]
 
-                if ai_messages:
-                    return ai_messages[-1].get("content", "Ответ не получен")
+                if messages:
+                    return messages[-1].get("content", "Ответ не получен")
                 else:
                     return "Ответ от AI не получен"
 
