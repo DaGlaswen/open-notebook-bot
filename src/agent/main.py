@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.enums import ParseMode
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -85,7 +86,13 @@ class SessionManager:
         self._session_id = None
         self._context = None
 
-def format_markdown_for_telegram(text: str) -> str:
+import re
+import html
+
+def format_markdown_for_telegram_html(text: str) -> str:
+    """
+    Преобразует Markdown в HTML, безопасный для Telegram.
+    """
     lines = text.splitlines()
     output_lines = []
     in_table = False
@@ -95,24 +102,27 @@ def format_markdown_for_telegram(text: str) -> str:
     while i < len(lines):
         line = lines[i]
 
+        # Экранируем HTML-символы заранее, чтобы не сломать разметку
+        safe_line = html.escape(line)
+
         # Заголовки
         if line.startswith("### "):
-            content = line[4:].strip()
-            output_lines.append(f"\n🔹 {content}")
+            content = html.escape(line[4:].strip())
+            output_lines.append(f"\n<b>{content}</b>")
             i += 1
             continue
         elif line.startswith("## "):
-            content = line[3:].strip()
-            output_lines.append(f"\n📌 {content}")
+            content = html.escape(line[3:].strip())
+            output_lines.append(f"\n<b>📌 {content}</b>")
             i += 1
             continue
         elif line.startswith("# "):
-            content = line[2:].strip()
-            output_lines.append(f"\n🎯 {content.upper()}")
+            content = html.escape(line[2:].strip())
+            output_lines.append(f"\n<b>🎯 {content.upper()}</b>")
             i += 1
             continue
 
-        # Начало таблицы
+        # Обработка таблиц
         if "|" in line and not in_table:
             if i + 1 < len(lines) and re.search(r'\|.*?-.*?\|', lines[i + 1]):
                 in_table = True
@@ -123,25 +133,53 @@ def format_markdown_for_telegram(text: str) -> str:
         if in_table:
             table_lines.append(line)
             if "|" not in line or i == len(lines) - 1:
-                output_lines.extend(_convert_table_to_plain_bullets(table_lines))
+                output_lines.extend(_convert_table_to_html_bullets(table_lines))
                 in_table = False
                 table_lines = []
             i += 1
             continue
 
-        # Убираем ** и __
-        line = re.sub(r'\*\*(.*?)\*\*', r'\1', line)
-        line = re.sub(r'__(.*?)__', r'\1', line)
+        # Жирный текст: **текст** → <b>текст</b>
+        safe_line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', safe_line)
+        safe_line = re.sub(r'__(.*?)__', r'<b>\1</b>', safe_line)
 
-        # Убираем ссылки [текст](url) → текст
-        line = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', line)
+        # Ссылки [текст](url) → текст
+        safe_line = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', safe_line)
 
-        output_lines.append(line)
+        output_lines.append(safe_line)
         i += 1
 
     result = "\n".join(output_lines).strip()
     result = re.sub(r'\n{3,}', '\n\n', result)
     return result
+
+
+def _convert_table_to_html_bullets(table_lines: list[str]) -> list[str]:
+    if len(table_lines) < 2:
+        escaped = [html.escape(line) for line in table_lines]
+        return ["\n" + "\n".join(escaped)]
+
+    try:
+        headers = [h.strip() for h in table_lines[0].split('|')[1:-1]]
+        data_lines = table_lines[2:]
+        if not headers:
+            raise ValueError
+
+        result = ["\n"]
+        for row in data_lines:
+            if not row.strip() or '---' in row:
+                continue
+            cells = [c.strip() for c in row.split('|')[1:-1]]
+            if len(cells) != len(headers):
+                continue
+            main = html.escape(cells[0])
+            rest = " | ".join(html.escape(c) for c in cells[1:])
+            result.append(f"• <b>{main}</b>: {rest}")
+        return result
+    except Exception:
+        # Fallback: экранировать всю таблицу как текст
+        escaped = [html.escape(line) for line in table_lines]
+        return ["\n" + "\n".join(escaped)]
 
 
 def _convert_table_to_plain_bullets(table_lines: list[str]) -> list[str]:
@@ -218,7 +256,7 @@ class MessageQueue:
                     response = await self.send_to_opennotebook(user_id, chat_msg.message)
 
                     # Форматируем для Telegram
-                    formatted_response = format_markdown_for_telegram(response)
+                    formatted_response = format_markdown_for_telegram_html(response)
 
                     # Отправляем ответ пользователю
                     await self.send_long_message(bot, chat_id, formatted_response)
@@ -238,42 +276,43 @@ class MessageQueue:
                 self.processing = False
             logger.info("Обработка очереди завершена")
 
+    from aiogram.enums import ParseMode
+
     async def send_long_message(self, bot: Bot, chat_id: int, text: str):
-        """Отправка длинного сообщения в виде нескольких частей, если превышен лимит длины сообщения в Telegram"""
+        """Отправка длинного HTML-сообщения"""
         TELEGRAM_MAX_LENGTH = 4096
-        
+
         if len(text) <= TELEGRAM_MAX_LENGTH:
-            await bot.send_message(chat_id, text)
+            await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
             return
-        
-        # Разбиваем текст на части, не превышающие лимит
+
+        # Разбиваем, но НЕ по символам, а по строкам, чтобы не разорвать теги
         parts = []
-        current_part = ""
-        
-        # Разбиваем по строкам, чтобы не резать посреди строк
-        lines = text.split('\n')
-        
-        for line in lines:
-            if len(current_part + line + '\n') <= TELEGRAM_MAX_LENGTH:
-                current_part += line + '\n'
+        current = ""
+        for line in text.splitlines(keepends=True):
+            if len(current) + len(line) <= TELEGRAM_MAX_LENGTH:
+                current += line
             else:
-                if current_part:
-                    parts.append(current_part.rstrip('\n'))
-                current_part = line + '\n'
-        
-        if current_part:
-            parts.append(current_part.rstrip('\n'))
-        
-        # Отправляем все части
+                if current:
+                    parts.append(current)
+                current = line
+        if current:
+            parts.append(current)
+
         for i, part in enumerate(parts):
-            if i == 0:
-                # Для первого сообщения не добавляем префикс
-                await bot.send_message(chat_id, part)
-            else:
-                # Для последующих частей добавляем номер части
-                await bot.send_message(chat_id, f"({i + 1}/{len(parts)})\n{part}")
-            
-            # Небольшая задержка, чтобы не превысить рейт-лимит
+            try:
+                if i == 0:
+                    await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML)
+                else:
+                    await bot.send_message(chat_id, f"({i + 1}/{len(parts)})\n{part}", parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logger.warning(f"HTML parse error, fallback to plain text: {e}")
+                # Fallback: убираем HTML-теги
+                plain = re.sub(r'<[^>]+>', '', part)
+                if i == 0:
+                    await bot.send_message(chat_id, plain)
+                else:
+                    await bot.send_message(chat_id, f"({i + 1}/{len(parts)})\n{plain}")
             await asyncio.sleep(0.1)
 
     async def send_to_opennotebook(self, user_id: int, message: str) -> str:
