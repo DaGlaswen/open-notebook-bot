@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
+import re
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -150,20 +151,106 @@ class MessageQueue:
                 self.processing = False
             logger.info("Обработка очереди завершена")
 
+    def escape_markdown_v2(self, text: str) -> str:
+        """Экранирование специальных символов для Telegram MarkdownV2"""
+        # Экранируем специальные символы MarkdownV2
+        # Символы, которые нужно экранировать: _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
+        special_chars = r'([_*\[\]()~`>\#\+=\|\\\{\}\.!])'
+        return re.sub(special_chars, r'\\\1', text)
+
+    def format_markdown_for_telegram(self, text: str) -> str:
+        """Преобразование простого markdown в формат, совместимый с Telegram MarkdownV2"""
+        # Сохраняем кодовые блоки
+        code_blocks = []
+        idx = 0
+        while True:
+            start = text.find('```')
+            if start == -1:
+                break
+            end = text.find('```', start + 3)
+            if end == -1:
+                break
+            end += 3  # включаем закрывающие ```
+            code_block = text[start:end]
+            code_blocks.append(code_block)
+            text = text[:start] + f"CODE_BLOCK_PLACEHOLDER_{len(code_blocks)-1}" + text[end:]
+        
+        # Сохраняем inline-код
+        inline_codes = []
+        idx = 0
+        while True:
+            start = text.find('`')
+            if start == -1:
+                break
+            end = text.find('`', start + 1)
+            if end == -1:
+                break
+            inline_code = text[start:end+1]
+            inline_codes.append(inline_code)
+            text = text[:start] + f"INLINE_CODE_PLACEHOLDER_{len(inline_codes)-1}" + text[end+1:]
+        
+        # Обработка жирного текста: **text** -> *text*
+        text = re.sub(r'\*\*(.*?)\*\*', r'*\1*', text)
+        # Обработка жирного текста: __text__ -> *text*
+        text = re.sub(r'__(.*?)__', r'*\1*', text)
+        
+        # Обработка курсива: *text* -> _text_
+        # Обработка курсива: _text_ -> _text_
+        text = re.sub(r'(?<!\*)\*([^\*]+?)\*(?!\*)', r'_\1_', text)
+        text = re.sub(r'(?<!_)_([^_]+?)_(?!_)', r'_\1_', text)
+        
+        # Обработка зачеркивания: ~~text~~ -> ~text~
+        text = re.sub(r'~~(.*?)~~', r'~\1~', text)
+        
+        # Обработка заголовков: #, ##, ### -> делаем жирными
+        lines = text.split('\n')
+        formatted_lines = []
+        for line in lines:
+            header_match = re.match(r'^(#{1,6})\s+(.*)', line)
+            if header_match:
+                header_level = len(header_match.group(1))
+                header_text = header_match.group(2)
+                formatted_lines.append(f"*{header_text}*")
+            else:
+                formatted_lines.append(line)
+        text = '\n'.join(formatted_lines)
+        
+        # Экранируем оставшийся текст
+        text = self.escape_markdown_v2(text)
+        
+        # Восстанавливаем кодовые блоки
+        for i, block in enumerate(code_blocks):
+            placeholder = f"CODE_BLOCK_PLACEHOLDER_{i}"
+            text = text.replace(placeholder, block)
+        
+        # Восстанавливаем inline-код
+        for i, code in enumerate(inline_codes):
+            placeholder = f"INLINE_CODE_PLACEHOLDER_{i}"
+            text = text.replace(placeholder, code)
+        
+        return text
+
     async def send_long_message(self, bot: Bot, chat_id: int, text: str):
         """Отправка длинного сообщения в виде нескольких частей, если превышен лимит длины сообщения в Telegram"""
         TELEGRAM_MAX_LENGTH = 4096
-        
-        if len(text) <= TELEGRAM_MAX_LENGTH:
-            await bot.send_message(chat_id, text)
+
+        # Преобразуем markdown в формат, совместимый с Telegram
+        formatted_text = self.format_markdown_for_telegram(text)
+
+        if len(formatted_text) <= TELEGRAM_MAX_LENGTH:
+            try:
+                await bot.send_message(chat_id, formatted_text, parse_mode='MarkdownV2')
+            except Exception:
+                # Если возникла ошибка с Markdown, отправляем без форматирования
+                await bot.send_message(chat_id, text)
             return
-        
+
         # Разбиваем текст на части, не превышающие лимит
         parts = []
         current_part = ""
-        
+
         # Разбиваем по строкам, чтобы не резать посреди строк
-        lines = text.split('\n')
+        lines = formatted_text.split('\n')
         
         for line in lines:
             if len(current_part + line + '\n') <= TELEGRAM_MAX_LENGTH:
@@ -178,13 +265,20 @@ class MessageQueue:
         
         # Отправляем все части
         for i, part in enumerate(parts):
-            if i == 0:
-                # Для первого сообщения не добавляем префикс
-                await bot.send_message(chat_id, part)
-            else:
-                # Для последующих частей добавляем номер части
-                await bot.send_message(chat_id, f"({i + 1}/{len(parts)})\n{part}")
-            
+            try:
+                if i == 0:
+                    # Для первого сообщения не добавляем префикс
+                    await bot.send_message(chat_id, part, parse_mode='MarkdownV2')
+                else:
+                    # Для последующих частей добавляем номер части
+                    await bot.send_message(chat_id, f"({i + 1}/{len(parts)})\n{part}", parse_mode='MarkdownV2')
+            except Exception:
+                # Если возникла ошибка с Markdown, отправляем без форматирования
+                if i == 0:
+                    await bot.send_message(chat_id, text if i == 0 and len(parts) == 1 else part)
+                else:
+                    await bot.send_message(chat_id, f"({i + 1}/{len(parts)})\n{part}")
+
             # Небольшая задержка, чтобы не превысить рейт-лимит
             await asyncio.sleep(0.1)
 
