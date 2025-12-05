@@ -120,9 +120,16 @@ def format_markdown_for_telegram_html(text: str) -> str:
             i += 1
             continue
 
-        # Обработка таблиц
+        # Обработка таблиц (включая структурированные данные с |)
         if "|" in line and not in_table:
+            # Проверяем, является ли это таблицей по наличию разделителя
             if i + 1 < len(lines) and re.search(r'\|.*?-.*?\|', lines[i + 1]):
+                in_table = True
+                table_lines = [line]
+                i += 1
+                continue
+            # Также проверяем, есть ли похожие строки после (для нестандартных таблиц)
+            elif i + 1 < len(lines) and "|" in lines[i + 1]:
                 in_table = True
                 table_lines = [line]
                 i += 1
@@ -130,11 +137,20 @@ def format_markdown_for_telegram_html(text: str) -> str:
 
         if in_table:
             table_lines.append(line)
-            if "|" not in line or i == len(lines) - 1:
+            # Прекращаем сбор таблицы если:
+            # 1. Следующая строка не содержит | и не пустая
+            # 2. Это последняя строка
+            # 3. Следующая строка выглядит как заголовок или другая структура
+            if (i == len(lines) - 1 or
+                    ("|" not in lines[i + 1] and lines[i + 1].strip()) or
+                    lines[i + 1].startswith(("###", "##", "#", "• ", "- ", "* "))):
                 output_lines.extend(_convert_table_to_html_bullets(table_lines))
                 in_table = False
                 table_lines = []
-            i += 1
+                i += 1  # Пропускаем эту строку, т.к. она не принадлежит таблице
+                continue
+            else:
+                i += 1
             continue
 
         # Жирный текст: **текст** → <b>текст</b>
@@ -144,7 +160,12 @@ def format_markdown_for_telegram_html(text: str) -> str:
         # Ссылки [текст](url) → текст
         safe_line = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', safe_line)
 
-        output_lines.append(safe_line)
+        # Обработка списков с маркерами •
+        if line.strip().startswith("• "):
+            safe_line = re.sub(r'^\s*•\s*', '• ', safe_line)
+            output_lines.append(safe_line)
+        else:
+            output_lines.append(safe_line)
         i += 1
 
     result = "\n".join(output_lines).strip()
@@ -157,57 +178,87 @@ import html
 
 
 def _convert_table_to_html_bullets(table_lines: list[str]) -> list[str]:
-    if len(table_lines) < 2:
+    if len(table_lines) < 1:
         # Просто экранируем и возвращаем как есть
         escaped = [html.escape(line) for line in table_lines]
         return ["\n" + "\n".join(escaped)]
 
     try:
-        headers = [h.strip() for h in table_lines[0].split('|')[1:-1]]
-        data_lines = table_lines[2:]
-        if not headers:
-            raise ValueError
+        # Проверяем, действительно ли это таблица (с разделителями |)
+        has_table_format = any("|" in line for line in table_lines)
 
-        def markdown_bold_to_html(text: str) -> str:
-            """Заменяет **текст** и __текст__ на <b>текст</b>"""
-            text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-            text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
-            return text
+        if has_table_format:
+            # Обработка стандартной таблицы
+            headers = []
+            data_lines = []
 
-        def escape_preserving_b_tags(text: str) -> str:
-            """Экранирует HTML, но оставляет <b> и </b> нетронутыми"""
-            parts = re.split(r'(<b>.*?</b>)', text)
-            for i, part in enumerate(parts):
-                if not (part.startswith('<b>') and part.endswith('</b>')):
-                    parts[i] = html.escape(part)
-            return ''.join(parts)
+            for idx, line in enumerate(table_lines):
+                if idx == 0 and "|" in line:
+                    headers = [h.strip() for h in line.split('|')[1:-1]]
+                elif idx == 1 and re.search(r'\|.*?-.*?\|', line):
+                    # Это строка с разделителями ---, пропускаем
+                    continue
+                elif "|" in line:
+                    data_lines.append(line)
 
-        result = ["\n"]
-        for row in data_lines:
-            if not row.strip() or '---' in row:
-                continue
-            cells = [c.strip() for c in row.split('|')[1:-1]]
-            if len(cells) != len(headers):
-                continue
+            if headers and data_lines:
+                def markdown_bold_to_html(text: str) -> str:
+                    """Заменяет **текст** и __текст__ на <b>текст</b>"""
+                    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+                    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
+                    return text
 
-            # Обрабатываем первую ячейку (жирный заголовок пункта)
-            main_raw = cells[0]
-            main_with_bold = markdown_bold_to_html(main_raw)
-            main_safe = escape_preserving_b_tags(main_with_bold)
+                def escape_preserving_b_tags(text: str) -> str:
+                    """Экранирует HTML, но оставляет <b> и </b> нетронутыми"""
+                    parts = re.split(r'(<b>.*?</b>)', text)
+                    for i, part in enumerate(parts):
+                        if not (part.startswith('<b>') and part.endswith('</b>')):
+                            parts[i] = html.escape(part)
+                    return ''.join(parts)
 
-            # Обрабатываем остальные ячейки (могут тоже содержать **...**)
-            rest_parts = []
-            for c in cells[1:]:
-                c_with_bold = markdown_bold_to_html(c)
-                c_safe = escape_preserving_b_tags(c_with_bold)
-                rest_parts.append(c_safe)
-            rest = " | ".join(rest_parts)
+                result = ["\n"]
+                for row in data_lines:
+                    if not row.strip() or '---' in row:
+                        continue
+                    cells = [c.strip() for c in row.split('|')[1:-1]]
+                    if len(cells) != len(headers):
+                        continue
 
-            result.append(f"• {main_safe}: {rest}")
-        return result
+                    # Обрабатываем первую ячейку (жирный заголовок пункта)
+                    main_raw = cells[0]
+                    main_with_bold = markdown_bold_to_html(main_raw)
+                    main_safe = escape_preserving_b_tags(main_with_bold)
+
+                    # Обрабатываем остальные ячейки (могут тоже содержать **...**)
+                    rest_parts = []
+                    for c in cells[1:]:
+                        c_with_bold = markdown_bold_to_html(c)
+                        c_safe = escape_preserving_b_tags(c_with_bold)
+                        rest_parts.append(c_safe)
+                    rest = " | ".join(rest_parts)
+
+                    result.append(f"• {main_safe}: {rest}")
+                return result
+            else:
+                # Это не стандартная таблица, обрабатываем как список с разделителями
+                result = ["\n"]
+                for line in table_lines:
+                    if "|" in line:
+                        parts = [p.strip() for p in line.split('|') if p.strip()]
+                        if parts:
+                            result.append(f"• {' | '.join(parts)}")
+                    else:
+                        result.append(html.escape(line))
+                return result
+        else:
+            # Это не таблица, просто список строк
+            result = ["\n"]
+            for line in table_lines:
+                result.append(html.escape(line))
+            return result
 
     except Exception:
-        # Fallback: экранировать всю таблицу как plain text
+        # Fallback: экранировать всё как plain text
         escaped = [html.escape(line) for line in table_lines]
         return ["\n" + "\n".join(escaped)]
 
@@ -294,6 +345,8 @@ class MessageQueue:
 
                     response = await self.send_to_opennotebook(user_id, message_with_user)
 
+                    logger.debug(f"Ответ от Open-notebook для user_id {user_id}: {response}")
+
                     # Форматируем для Telegram
                     formatted_response = format_markdown_for_telegram_html(response)
 
@@ -367,8 +420,7 @@ class MessageQueue:
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             try:
-                logger.info(f"Отправка запроса в Open-Notebook от пользователя {user_id}")
-                logger.debug(f"Payload: {payload}")
+                logger.info(f"Отправка запроса в Open-Notebook от пользователя {user_id}: {message}")
 
                 response = await client.post(
                     f"{self.opennotebook_url}/api/chat/execute",
@@ -435,13 +487,16 @@ async def cmd_help(message: types.Message):
 @dp.message(Command("list"))
 async def cmd_list(message: types.Message):
     """Обработчик команды /list"""
-    logger.info(f"Получена команда /list от пользователя {message.from_user.id}")
+    user_id = message.from_user.id
+    prompt = "Дай текущую иерархию списка инициатив из чата (порядковый номер инициативы/название/RICE score/пользователь), где пользователь - это ID пользователя, который передавался в предыдущих сообщениях. Бери только те инициативы, которые были предложены в чате, не используй информацию из приложенных документов."
+
+    logger.info(f"Получена команда /list от пользователя {user_id}")
 
     await message_queue.add_message(
         bot=bot,
         chat_id=message.chat.id,
-        user_id=message.from_user.id,
-        message="Дай текущую иерархию списка инициатив (порядковый номер инициативы/название/RIse score,пользователь)",
+        user_id=user_id,
+        message=prompt,
         is_list_command=True
     )
 
