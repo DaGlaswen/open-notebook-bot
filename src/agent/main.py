@@ -86,8 +86,6 @@ class SessionManager:
         self._session_id = None
         self._context = None
 
-import re
-import html
 
 def format_markdown_for_telegram_html(text: str) -> str:
     """
@@ -156,6 +154,7 @@ def format_markdown_for_telegram_html(text: str) -> str:
 
 import re
 import html
+
 
 def _convert_table_to_html_bullets(table_lines: list[str]) -> list[str]:
     if len(table_lines) < 2:
@@ -250,7 +249,7 @@ class MessageQueue:
         self.session_manager = SessionManager(opennotebook_url, notebook_id)
         self.lock = asyncio.Lock()
 
-    async def add_message(self, bot: Bot, chat_id: int, user_id: int, message: str):
+    async def add_message(self, bot: Bot, chat_id: int, user_id: int, message: str, is_list_command: bool = False):
         """Добавить сообщение в очередь"""
         # Проверяем, обрабатывается ли сейчас какое-то сообщение
         async with self.lock:
@@ -266,7 +265,7 @@ class MessageQueue:
             )
 
         chat_msg = ChatMessage(user_id=user_id, message=message)
-        await self.queue.put((bot, chat_id, user_id, chat_msg))
+        await self.queue.put((bot, chat_id, user_id, chat_msg, is_list_command))
 
         # Запускаем обработку, если она еще не запущена
         async with self.lock:
@@ -280,11 +279,20 @@ class MessageQueue:
 
         try:
             while not self.queue.empty():
-                bot, chat_id, user_id, chat_msg = await self.queue.get()
+                bot, chat_id, user_id, chat_msg, is_list_command = await self.queue.get()
 
                 try:
                     await bot.send_chat_action(chat_id, "typing")
-                    response = await self.send_to_opennotebook(user_id, chat_msg.message)
+
+                    # Формируем сообщение с информацией о пользователе
+                    if is_list_command:
+                        # Для команды /list используем специальный промпт
+                        message_with_user = "Дай текущую иерархию списка инициатив (порядковый номер инициативы/название/RIse score,пользователь)"
+                    else:
+                        # Для обычных сообщений добавляем информацию о пользователе
+                        message_with_user = f"Пользователь {user_id}: {chat_msg.message}"
+
+                    response = await self.send_to_opennotebook(user_id, message_with_user)
 
                     # Форматируем для Telegram
                     formatted_response = format_markdown_for_telegram_html(response)
@@ -404,6 +412,7 @@ async def cmd_start(message: types.Message):
         "Если поступит несколько запросов одновременно, они будут обработаны последовательно.\n\n"
         "Команды:\n"
         "/start - Начать работу\n"
+        "/list - Показать текущую иерархию инициатив\n"
         "/help - Показать справку"
     )
 
@@ -417,7 +426,23 @@ async def cmd_help(message: types.Message):
         "и я передам её на анализ в Open-Notebook.\n\n"
         "Все сообщения обрабатываются последовательно, "
         "поэтому если кто-то уже отправил запрос, "
-        "вам придется немного подождать в очереди."
+        "вам придется немного подождать в очереди.\n\n"
+        "Команды:\n"
+        "/list - Показать текущую иерархию инициатив"
+    )
+
+
+@dp.message(Command("list"))
+async def cmd_list(message: types.Message):
+    """Обработчик команды /list"""
+    logger.info(f"Получена команда /list от пользователя {message.from_user.id}")
+
+    await message_queue.add_message(
+        bot=bot,
+        chat_id=message.chat.id,
+        user_id=message.from_user.id,
+        message="Дай текущую иерархию списка инициатив (порядковый номер инициативы/название/RIse score,пользователь)",
+        is_list_command=True
     )
 
 
@@ -433,7 +458,8 @@ async def handle_message(message: types.Message):
         bot=bot,
         chat_id=message.chat.id,
         user_id=message.from_user.id,
-        message=message.text
+        message=message.text,
+        is_list_command=False
     )
 
 
