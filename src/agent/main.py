@@ -338,7 +338,7 @@ class MessageQueue:
                     # Формируем сообщение с информацией о пользователе
                     if is_list_command:
                         # Для команды /list используем специальный промпт
-                        message_with_user = "Дай текущую иерархию списка инициатив (порядковый номер инициативы/название/RIse score,пользователь)"
+                        message_with_user = chat_msg.message
                     else:
                         # Для обычных сообщений добавляем информацию о пользователе
                         message_with_user = f"Пользователь {user_id}: {chat_msg.message}"
