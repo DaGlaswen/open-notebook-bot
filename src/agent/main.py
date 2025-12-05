@@ -277,12 +277,12 @@ def _convert_table_to_plain_bullets(table_lines: list[str]) -> list[str]:
 class MessageQueue:
     """Очередь сообщений для синхронной обработки"""
 
-    def __init__(self, opennotebook_url: str, notebook_id: str):
+    def __init__(self, opennotebook_url: str, notebook_id: str, session_id: str):
         self.queue: asyncio.Queue = asyncio.Queue()
         self.processing = False
         self.opennotebook_url = opennotebook_url
         self.notebook_id = notebook_id
-        self.session_manager = SessionManager(opennotebook_url, notebook_id)
+        self.session_manager = SessionManager(opennotebook_url, notebook_id, session_id)
         self.lock = asyncio.Lock()
 
     async def add_message(self, bot: Bot, chat_id: int, user_id: int, message: str, is_list_command: bool = False):
@@ -436,7 +436,7 @@ settings = Settings()
 bot = Bot(token=settings.bot_token)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
-message_queue = MessageQueue(settings.opennotebook_url, settings.notebook_id)
+message_queue = MessageQueue(settings.opennotebook_url, settings.notebook_id, settings.session_id)
 
 
 # Обработчики команд
