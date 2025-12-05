@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     bot_token: str = Field(..., env="BOT_TOKEN")
     opennotebook_url: str = Field(default="http://localhost:5055", env="OPENNOTEBOOK_URL")
     notebook_id: str = Field(..., env="NOTEBOOK_ID")
+    session_id: str = Field(default="chat_session:30nsl9iu3k6pvnovcn8w", env="SESSION_ID")
 
     class Config:
         env_file = ".env"
@@ -37,36 +38,21 @@ class ChatMessage(BaseModel):
 class SessionManager:
     """Управление единой сессией для всех пользователей"""
 
-    def __init__(self, opennotebook_url: str, notebook_id: str):
-        self._session_id: Optional[str] = None
+    def __init__(self, opennotebook_url: str, notebook_id: str, session_id: str):
+        self._session_id: Optional[str] = session_id  # Используем захардкоженный session_id
         self._context: Optional[dict] = None
         self.opennotebook_url = opennotebook_url
         self.notebook_id = notebook_id
         self._lock = asyncio.Lock()
 
-    async def get_or_create_session(self) -> tuple[str, dict]:
+    async def get_or_create_session_and_context(self) -> tuple[str, dict]:
         """Получить или создать единую сессию и контекст для всех пользователей"""
         async with self._lock:
-            if self._session_id and self._context:
+            if self._context:
                 return self._session_id, self._context
 
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # 1. Создаем сессию
-                session_response = await client.post(
-                    f"{self.opennotebook_url}/api/chat/sessions",
-                    json={
-                        "notebook_id": self.notebook_id,
-                        "title": "Стратсессия"
-                    }
-                )
-                pprint(session_response)
-                session_response.raise_for_status()
-                session_data = session_response.json()
-                self._session_id = session_data["id"]
-
-                logger.info(f"Создана общая сессия {self._session_id}")
-
-                # 2. Получаем контекст
+                # Получаем контекст для существующей сессии
                 context_response = await client.post(
                     f"{self.opennotebook_url}/api/chat/context",
                     json={
@@ -77,13 +63,12 @@ class SessionManager:
                 context_response.raise_for_status()
                 self._context = context_response.json()
 
-                logger.info("Получен контекст для общей сессии")
+                logger.info(f"Получен контекст для сессии {self._session_id}")
 
                 return self._session_id, self._context
 
     def clear_session(self):
-        """Очистить сессию"""
-        self._session_id = None
+        """Очистить контекст (сессия остается захардкоженной)"""
         self._context = None
 
 
@@ -410,7 +395,7 @@ class MessageQueue:
     async def send_to_opennotebook(self, user_id: int, message: str) -> str:
         """Отправка сообщения в Open-Notebook"""
         # Получаем или создаем единую сессию для всех пользователей
-        session_id, context = await self.session_manager.get_or_create_session()
+        session_id, context = await self.session_manager.get_or_create_session_and_context()
 
         payload = {
             "session_id": session_id,
